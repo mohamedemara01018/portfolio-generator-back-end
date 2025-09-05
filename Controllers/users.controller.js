@@ -26,16 +26,17 @@ const register = async (req, res) => {
         if (user && user.password) {
             const saltvalue = await bcrypt.genSalt(10);
             const hashPassword = await bcrypt.hash(String(user.password), saltvalue);
-            user.password = String(hashPassword)
+            user.password = String(hashPassword);
+
         }
         res.cookie('token', token, {
             httpOnly: true,
             secure: true,
-            maxAge: 60 * 60 * 1000, // one hour
+            maxAge: 1000 * 60 * 60, // one hour
             sameSite: "strict",
         })
         console.log(res)
-        const newUser = await userModel.create(user);
+        const newUser = await userModel.create({ ...user, token });
         return res.status(201).json({ error: false, message: "successful", newUser });
 
     } catch (error) {
@@ -44,16 +45,72 @@ const register = async (req, res) => {
     }
 };
 
-// const login = async (req, res) => {
-//     const { email, password } = req.body
-//     try {
-//         if (!email || !password) {
-//             return res.status(404).json({ message: 'email or password is not found' })
-//         }
+const logout = async (req, res) => {
+    try {
+        const cookies = req.cookies
+        if (cookies.token) {
+            res.clearCookie("token", {
+                httpOnly: true,
+                secure: true,
+                sameSite: "strict",
+            });
+        } else {
+            return res.status(200).json({ message: "you must (log in or register if you have not account) first" })
+        }
+        return res.status(200).json({ message: "loged out successfully" })
+    } catch (error) {
+        return res.status(500).json({ message: "internal server error" });
+    }
 
-//     } catch (error) {
-//         return res.status(500).json({ message: 'internal server error' })
-//     }
-// }
 
-export { getAllUsers, register }
+}
+
+
+const authUser = async (req, res) => {
+    const token = req.cookies.token; // or req.cookies["__session"]
+
+    if (!token) {
+        return res.status(401).json({ logIn: false, message: "no token found" });
+    }
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await userModel.findOne({ email: decoded.email })
+        return res.status(200).json({
+            logIn: true,
+            user: user,
+        });
+    } catch (error) {
+        return res.status(401).json({ logIn: false, message: "invalid or expired token" });
+    }
+};
+
+const login = async (req, res) => {
+    const { email, password } = req.body
+    try {
+        if (!email || !password) {
+            return res.status(404).json({ message: 'email or password is not found' })
+        }
+        const userExist = await userModel.findOne({ email });
+        if (!userExist) {
+            return res.status(404).json({ message: 'User is not exist, please sign up first' })
+        }
+        const isPasswordVaild = await bcrypt.compare(password, userExist.password);
+        if (!isPasswordVaild) {
+            return res.status(401).json({ message: "password is wrong" })
+        }
+        const token = jwt.sign({ id: userExist._id, email, password }, process.env.JWT_SECRET, { expiresIn: 1000 * 60 * 60 });
+        res.cookie('token', token, {
+            httpOnly: true,
+            secure: false,
+            maxAge: 1000 * 60 * 60,
+            sameSite: "lax",
+        })
+        return res.status(200).json({ token })
+
+    } catch (error) {
+        return res.status(500).json({ message: 'internal server error' })
+    }
+}
+
+export { getAllUsers, register, authUser, logout, login }
