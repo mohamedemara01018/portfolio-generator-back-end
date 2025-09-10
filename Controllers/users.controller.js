@@ -1,6 +1,8 @@
 import userModel from '../Models/users.model.js'
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
+import { transporter } from '../index.js';
+import { mailOptionsHandle } from '../constant.js';
 
 const getAllUsers = async (req, res) => {
     try {
@@ -11,39 +13,132 @@ const getAllUsers = async (req, res) => {
     }
 }
 
-
 const register = async (req, res) => {
     const user = req.body;
-    console.log(user);
-
     try {
         const userExist = await userModel.findOne({ email: user.email });
-        if (userExist) {
-            return res.status(409).json({ error: false, message: "user exist" });
-        }
-        const token = await jwt.sign({ email: user.email, password: user.password }, process.env.JWT_SECRET, { expiresIn: '6h' });
-        console.log(token);
-        if (user && user.password) {
-            const saltvalue = await bcrypt.genSalt(10);
-            const hashPassword = await bcrypt.hash(String(user.password), saltvalue);
-            user.password = String(hashPassword);
 
+        // لو المستخدم موجود ومفعل بالفعل
+        if (userExist && userExist.isVerified) {
+            return res.status(409).json({ error: true, message: "user already exists" });
         }
-        res.cookie('token', token, {
-            httpOnly: true,
-            secure: true,
-            maxAge: 1000 * 60 * 60, // one hour
-            sameSite: "strict",
-        })
-        console.log(res)
-        const newUser = await userModel.create({ ...user, token });
-        return res.status(201).json({ error: false, message: "successful", newUser });
+
+        // hash password
+        if (user && user.password) {
+            const salt = await bcrypt.genSalt(10);
+            const hashPassword = await bcrypt.hash(String(user.password), salt);
+            user.password = hashPassword;
+        }
+
+        // generate token + code
+        const token = jwt.sign({ email: user.email }, process.env.JWT_SECRET, { expiresIn: "6h" });
+        const randomCode = Math.floor(100000 + Math.random() * 900000); // 6-digit code
+        const expires = Date.now() + 1000 * 60 * 5; // 5 minutes
+
+        // send email
+        const mailOption = mailOptionsHandle(user.email, randomCode, user.firstName);
+        await transporter.sendMail(mailOption);
+
+        const newUserOptions = {
+            ...user,
+            token,
+            image: "https://cdn.pixabay.com/photo/2023/02/18/11/00/icon-7797704_640.png",
+            isVerified: false,
+            verificationCode: randomCode,
+            codeExpiresAt: expires,
+        };
+
+        let newUser;
+
+        if (userExist) {
+            // المستخدم موجود بس لسه مش مفعل → نحدث بياناته
+            newUser = await userModel.findOneAndUpdate(
+                { email: user.email },
+                newUserOptions,
+                { new: true }
+            );
+        } else {
+            // مستخدم جديد
+            newUser = await userModel.create(newUserOptions);
+        }
+
+        return res.status(201).json({ error: false, message: "successful, verification code sent", newUser });
 
     } catch (error) {
         console.log(error);
         return res.status(500).json({ error: true, message: "internal server error" });
     }
 };
+
+const verify = async (req, res) => {
+    const { email, code } = req.body;
+    try {
+        const user = await userModel.findOne({ email });
+        console.log(user)
+        if (!user) {
+            return res.status(404).json({ message: 'user is not found, please register' })
+        }
+        if (user.verificationCode != code) {
+            console.log(user.verificationCode, '   ', code)
+            return res.status(400).json({ message: 'invaild code' })
+        }
+        if (user.codeExpiresAt < Date.now()) {
+            return res.status(400).json({ message: 'code is expired, please click resend to send another code' })
+        }
+        res.cookie('token', user.token, {
+            httpOnly: true,
+            secure: true,
+            maxAge: 1000 * 60 * 60, // one hour
+            sameSite: "strict",
+        })
+        await userModel.findOneAndUpdate(
+            { email: email },
+            {
+                isVerified: true,
+                verificationCode: null,
+                codeExpiresAt: null,
+            },
+            { new: true }
+        );
+        // user.isVerified = true;
+        // user.verificationCode = null;
+        // user.codeExpiresAt = null;
+        return res.status(201).json({ message: 'email verifed successfully' })
+    } catch (error) {
+        return res.status(500).json({ message: 'internal server error' })
+    }
+
+}
+
+
+const reSendCode = async (req, res) => {
+    const { email } = req.body
+    try {
+        const user = await userModel.findOne({ email });
+
+        if (!user) {
+            return res.status(404).json({ message: 'user is not found' })
+        }
+        const randomCode = Math.floor(100000 + (Math.random() * 900000));
+        const expires = Date.now() + 1000 * 60 * 5;
+        console.log(randomCode)
+        const newUserOptions = {
+            verificationCode: randomCode,
+            codeExpiresAt: expires
+        }
+        const mailOption = mailOptionsHandle(email, randomCode, user.firstName);
+        await transporter.sendMail(mailOption);
+
+        const updateUser = await userModel.findOneAndUpdate(
+            { email: user.email },
+            newUserOptions,
+            { new: true }
+        );
+        return res.status(201).json({ message: 'successful, verification code is resent', updateUser })
+    } catch (error) {
+        return res.status(500).json({ message: 'internal server error' })
+    }
+}
 
 const logout = async (req, res) => {
     try {
@@ -113,4 +208,4 @@ const login = async (req, res) => {
     }
 }
 
-export { getAllUsers, register, authUser, logout, login }
+export { getAllUsers, register, authUser, logout, login, verify, reSendCode }

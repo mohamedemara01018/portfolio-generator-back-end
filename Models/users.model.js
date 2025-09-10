@@ -22,6 +22,9 @@ const userSchema = new mongoose.Schema({
         type: String
     },
     token: String,
+    isVerified: Boolean,
+    verificationCode: String,
+    codeExpiresAt: String,
     portfolio: String
     //   [
     //     {
